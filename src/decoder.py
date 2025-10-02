@@ -6,6 +6,7 @@ try:
 except ModuleNotFoundError:
     from src.utils import MultiHeadAttention, FeedForward, Embeddings
 
+
 class TransformerDecoderLayer(nn.Module):
     """Transformer Decoder Layer.
 
@@ -27,14 +28,16 @@ class TransformerDecoderLayer(nn.Module):
 
     def __init__(self, d_model: int, num_attention_heads: int, intermediate_size: int):
         super(TransformerDecoderLayer, self).__init__()
-        self.layer_norm_1 = None
-        self.layer_norm_2 = None
-        self.layer_norm_3 = None
-        self.self_attention = None
-        self.cross_attention = None
-        self.feed_forward = None
+        self.layer_norm_1 = nn.LayerNorm(d_model)
+        self.layer_norm_2 = nn.LayerNorm(d_model)
+        self.layer_norm_3 = nn.LayerNorm(d_model)
+        self.self_attention = MultiHeadAttention(d_model, num_attention_heads)
+        self.cross_attention = MultiHeadAttention(d_model, num_attention_heads)
+        self.feed_forward = FeedForward(d_model, intermediate_size)
 
-    def forward(self, x: torch.Tensor, enc_output: torch.Tensor, tgt_mask: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, x: torch.Tensor, enc_output: torch.Tensor, tgt_mask: torch.Tensor
+    ) -> torch.Tensor:
         """Forward pass through the Transformer decoder layer.
 
         Args:
@@ -46,17 +49,36 @@ class TransformerDecoderLayer(nn.Module):
             torch.Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
         # Apply layer normalization and masked multi-head self-attention
-        hidden_state = None
-        x = None
+        x = self.layer_norm_1(x)
+        self_attention_output = self.self_attention(x, x, x, tgt_mask)
+
+        # Handle both cases where attention returns tuple or tensor
+        if isinstance(self_attention_output, tuple):
+            hidden_state = self_attention_output[0]
+        else:
+            hidden_state = self_attention_output
+
+        x = x + hidden_state  # Residual connection
 
         # Apply layer normalization and cross-attention
-        hidden_state = None
-        x = None
-        
+        x = self.layer_norm_2(x)
+        cross_attention_output = self.self_attention(x, enc_output, enc_output)
+
+        # Handle both cases where attention returns tuple or tensor
+        if isinstance(cross_attention_output, tuple):
+            hidden_state = cross_attention_output[0]
+        else:
+            hidden_state = cross_attention_output
+
+        x = x + hidden_state  # Residual connection
+
         # Apply layer normalization and feed-forward network
-        x = None
+        x = self.layer_norm_3(x)
+        ff = self.feed_forward(x)
+        x = x + ff  # Residual connection
 
         return x
+
 
 class TransformerDecoder(nn.Module):
     """Transformer Decoder.
@@ -77,13 +99,27 @@ class TransformerDecoder(nn.Module):
         layers (nn.ModuleList): List of Transformer decoder layers.
     """
 
-    def __init__(self, vocab_size: int, max_position_embeddings: int, d_model: int,
-                num_attention_heads: int, intermediate_size: int, num_hidden_layers: int):
+    def __init__(
+        self,
+        vocab_size: int,
+        max_position_embeddings: int,
+        d_model: int,
+        num_attention_heads: int,
+        intermediate_size: int,
+        num_hidden_layers: int,
+    ):
         super(TransformerDecoder, self).__init__()
-        self.embeddings = None
-        self.layers = None
+        self.embeddings = Embeddings(vocab_size, max_position_embeddings, d_model)
+        self.layers = nn.ModuleList(
+            [
+                TransformerDecoderLayer(d_model, num_attention_heads, intermediate_size)
+                for _ in range(num_hidden_layers)
+            ]
+        )
 
-    def forward(self, input_ids: torch.Tensor, enc_output: torch.Tensor) -> torch.Tensor:
+    def forward(
+        self, input_ids: torch.Tensor, enc_output: torch.Tensor
+    ) -> torch.Tensor:
         """Forward pass through the Transformer decoder.
 
         Args:
@@ -94,14 +130,13 @@ class TransformerDecoder(nn.Module):
             torch.Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
         # Generate token embeddings
-        x = None
+        x = self.embeddings(input_ids)
         batch_size, seq_len, _ = x.size()
 
         # Generate causal mask for target tensor
-        tgt_mask = None
+        tgt_mask = torch.tril(torch.ones(seq_len, seq_len)).unsqueeze(0).to(x.device)
 
         for layer in self.layers:
             x = layer(x, enc_output, tgt_mask)
 
         return x
-

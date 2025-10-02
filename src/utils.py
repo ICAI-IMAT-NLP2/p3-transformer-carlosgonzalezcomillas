@@ -1,8 +1,8 @@
-
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import math
+
 
 class AttentionHead(nn.Module):
     """Single Attention Head with Masking Support.
@@ -25,10 +25,9 @@ class AttentionHead(nn.Module):
 
     def __init__(self, d_model: int, d_k: int, d_q: int, d_v: int):
         super(AttentionHead, self).__init__()
-
-        self.wq = None
-        self.wk = None
-        self.wv = None
+        self.wq = nn.Linear(d_model, d_q)
+        self.wk = nn.Linear(d_model, d_k)
+        self.wv = nn.Linear(d_model, d_v)
 
     def scaled_dot_product_attention(self, q, k, v, mask=None):
         """Calculate the attention weights with optional causal mask.
@@ -45,22 +44,22 @@ class AttentionHead(nn.Module):
         """
 
         # The dimension of the key tensor, used to scale the scores.
-        dim_k = None
+        dim_k = k.size(-1)
 
         # Calculate the dot product between query and the transpose of key.
         # The result is then scaled by the square root of dim_k.
-        scores = None
+        scores = torch.matmul(q, k.transpose(-2, -1)) / math.sqrt(dim_k)
 
         if mask is not None:
             # Apply the causal mask by setting the masked positions to a very large negative value.
-            scores = None
+            scores = scores.masked_fill(mask == 0, float("-inf"))
 
         # Apply the softmax function to obtain the attention weights.
-        weights = None
+        weights = F.softmax(scores, dim=-1)
 
         # Compute the output by performing a weighted sum of the value tensor
         # using the attention weights.
-        output = None
+        output = torch.matmul(weights, v)
 
         return output, weights
 
@@ -77,13 +76,15 @@ class AttentionHead(nn.Module):
             Tensor: Output tensor of shape (batch_size, seq_len, d_v).
         """
         # Project input tensor to query, key, and value tensors.
-        q = None
-        k = None
-        v = None
+        q = self.wq(x_q)
+        k = self.wk(x_k)
+        v = self.wv(x_v)
 
-        output, _ = None
+        # Compute the scaled dot product attention.
+        output, _ = self.scaled_dot_product_attention(q, k, v, mask)
 
         return output
+
 
 class MultiHeadAttention(nn.Module):
     """Multi-Head Attention mechanism with Masking Support.
@@ -103,12 +104,17 @@ class MultiHeadAttention(nn.Module):
 
     def __init__(self, d_model: int, num_attention_heads: int):
         super(MultiHeadAttention, self).__init__()
-        assert d_model % num_attention_heads == 0, "d_model must be divisible by num_attention_heads"
-        d_v = None
-        d_k = None
+        assert (
+            d_model % num_attention_heads == 0
+        ), "d_model must be divisible by num_attention_heads"
+        d_v = d_model // num_attention_heads
+        d_k = d_model // num_attention_heads
+        d_q = d_model // num_attention_heads
 
-        self.heads = None
-        self.output_linear = None
+        self.heads = nn.ModuleList(
+            [AttentionHead(d_model, d_q, d_k, d_v) for _ in range(num_attention_heads)]
+        )
+        self.output_linear = nn.Linear(d_model, d_model)
 
     def forward(self, x_q, x_k, x_v, mask=None):
         """Forward pass for the multi-head attention layer with optional causal mask.
@@ -123,12 +129,13 @@ class MultiHeadAttention(nn.Module):
             Tensor: Output tensor of shape (batch_size, seq_len, d_model).
         """
         # Concatenate the outputs from all attention heads.
-        x = None
+        x = torch.cat([head(x_q, x_k, x_v, mask) for head in self.heads], dim=-1)
 
-        # Apply the linear layer 
-        x = None
+        # Apply the linear layer
+        x = self.output_linear(x)
         return x
-    
+
+
 class FeedForward(nn.Module):
     """FeedForward module for the Transformer Decoder.
 
@@ -164,7 +171,8 @@ class FeedForward(nn.Module):
         x = self.gelu(x)
         x = self.linear_2(x)
         return x
-    
+
+
 class Embeddings(nn.Module):
     """Embeddings module for the Transformer Decoder.
 
@@ -198,7 +206,9 @@ class Embeddings(nn.Module):
             torch.Tensor: The combined and normalized embeddings of shape (batch_size, seq_len, d_model).
         """
         seq_length = input_ids.size(1)
-        position_ids = torch.arange(seq_length, dtype=torch.long, device=input_ids.device).unsqueeze(0)
+        position_ids = torch.arange(
+            seq_length, dtype=torch.long, device=input_ids.device
+        ).unsqueeze(0)
 
         # Create token and position embeddings
         token_embeddings = self.token_embeddings(input_ids)
@@ -209,4 +219,3 @@ class Embeddings(nn.Module):
         embeddings = self.layer_norm(embeddings)
 
         return embeddings
-
